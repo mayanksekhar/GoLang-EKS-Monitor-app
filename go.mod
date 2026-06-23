@@ -1,6 +1,6 @@
 module github.com/mayanksekhar/GoLang-EKS-Monitor-app
 
-go 1.26.4
+go 1.26
 
 require (
 	k8s.io/api v0.36.2

@@ -1,4 +1,4 @@
-name: Feature Branch — SAST + SCA
+name: Feature Branch — SAST + SCA + Policy
 
 on:
   push:
@@ -16,16 +16,10 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-
       - name: Run Semgrep
-        uses: returntocorp/semgrep-action@v1
-        with:
-          config: auto
-        continue-on-error: true
-
-      - name: Save results
-        run: semgrep scan --config=auto --json --output=semgrep-results.json . || true
-
+        run: |
+          pip install semgrep
+          semgrep scan --config=auto --json --output=semgrep-results.json . || true
       - uses: actions/upload-artifact@v4
         with:
           name: semgrep-results
@@ -38,14 +32,10 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
-
-      - name: Go mod tidy
-        run: go mod tidy
-
+          go-version: '1.26'
+      - run: go mod tidy
       - name: Trivy filesystem scan
         uses: aquasecurity/trivy-action@master
         with:
@@ -53,9 +43,43 @@ jobs:
           scan-ref: .
           format: table
           exit-code: 0
-
       - name: Install Nancy
         run: go install github.com/sonatype-nexus-community/nancy@latest
-
-      - name: Nancy dependency scan
+      - name: Nancy scan
         run: go list -json -deps ./... | nancy sleuth || true
+
+  kyverno-policy:
+    name: Kyverno Policy Validation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Kyverno CLI
+        run: |
+          curl -LO https://github.com/kyverno/kyverno/releases/download/v1.12.0/kyverno-cli_v1.12.0_linux_x86_64.tar.gz
+          tar -xzf kyverno-cli_v1.12.0_linux_x86_64.tar.gz
+          sudo mv kyverno /usr/local/bin/
+          kyverno version
+
+      - name: Validate good pod passes all policies
+        run: |
+          echo "Testing valid pod — should PASS all policies"
+          kyverno apply kyverno/policies/ \
+            --resource kyverno/tests/good-pod.yaml \
+            --detailed-results
+
+      - name: Validate floating tag is rejected
+        run: |
+          echo "Testing floating tag pod — should FAIL digest policy"
+          kyverno apply kyverno/policies/require-image-digest.yaml \
+            --resource kyverno/tests/bad-pod-floating-tag.yaml \
+            --detailed-results && exit 1 || echo "PASS — floating tag correctly rejected"
+
+      - name: Validate wrong registry is rejected
+        run: |
+          echo "Testing wrong registry pod — should FAIL registry policy"
+          kyverno apply kyverno/policies/require-ghcr-registry.yaml \
+            --resource kyverno/tests/bad-pod-wrong-registry.yaml \
+            --detailed-results && exit 1 || echo "PASS — wrong registry correctly rejected"

@@ -1,0 +1,31 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-ghcr-registry
+  annotations:
+    policies.kyverno.io/title: Require GHCR Registry
+    policies.kyverno.io/category: Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >-
+      All container images must be pulled from ghcr.io.
+      Images from unknown registries are not permitted.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: check-ghcr-registry
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: "Image must be from ghcr.io registry. Found: {{ request.object.spec.containers[].image }}"
+        foreach:
+          - list: "request.object.spec.containers"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.image }}"
+                    operator: NotEquals
+                    value: "ghcr.io/*"

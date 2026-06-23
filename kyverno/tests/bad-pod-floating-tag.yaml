@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bad-pod-floating-tag
+spec:
+  containers:
+    - name: eks-monitor
+      image: ghcr.io/mayanksekhar/golang-eks-monitor-app:develop
+      securityContext:
+        runAsNonRoot: true
+      resources:
+        limits:
+          cpu: "500m"
+          memory: "256Mi"

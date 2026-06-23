@@ -1,0 +1,32 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-image-digest
+  annotations:
+    policies.kyverno.io/title: Require Image Digest
+    policies.kyverno.io/category: Supply Chain Security
+    policies.kyverno.io/severity: critical
+    policies.kyverno.io/description: >-
+      Container images must reference a specific SHA digest.
+      Mutable tags like :latest, :develop, or :main are not permitted
+      as they can change without notice, breaking supply chain integrity.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: check-image-digest
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: "Image must use a SHA digest (@sha256:...). Floating tags like :latest or :develop are not permitted. Image: {{ request.object.spec.containers[].image }}"
+        foreach:
+          - list: "request.object.spec.containers"
+            deny:
+              conditions:
+                all:
+                  - key: "{{ element.image }}"
+                    operator: NotEquals
+                    value: "*@sha256:*"

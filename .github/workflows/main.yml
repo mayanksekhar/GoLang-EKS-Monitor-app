@@ -1,0 +1,168 @@
+name: Main — Full DevSecOps Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  sast:
+    name: SAST — Semgrep
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Semgrep
+        run: |
+          pip install semgrep
+          semgrep scan --config=auto --json --output=semgrep-results.json . || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-results-main
+          path: semgrep-results.json
+
+  sca:
+    name: SCA — Trivy + Nancy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - run: go mod tidy
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: json
+          output: trivy-fs-results.json
+          exit-code: 0
+      - name: Install Nancy
+        run: go install github.com/sonatype-nexus-community/nancy@latest
+      - name: Nancy scan
+        run: go list -json -deps ./... | nancy sleuth || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sca-results
+          path: trivy-fs-results.json
+
+  build-sign-push:
+    name: Build + Sign + Push to GHCR
+    runs-on: ubuntu-latest
+    needs: [sast, sca]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/golang-eks-monitor-app:main
+            ghcr.io/${{ github.repository_owner }}/golang-eks-monitor-app:${{ github.sha }}
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image with Cosign keyless
+        run: |
+          cosign sign --yes \
+            ghcr.io/${{ github.repository_owner }}/golang-eks-monitor-app@${{ steps.build.outputs.digest }}
+
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: build-sign-push
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name eks-monitor-demo \
+            --region ${{ secrets.AWS_DEFAULT_REGION }}
+
+      - name: Deploy via Helm
+        run: |
+          helm upgrade --install eks-monitor ./helm/eks-monitor \
+            --namespace eks-monitor \
+            --create-namespace \
+            --set image.repository=ghcr.io/${{ github.repository_owner }}/golang-eks-monitor-app \
+            --set image.tag=${{ github.sha }} \
+            --set env.CLUSTER_NAME=eks-monitor-demo \
+            --wait
+
+      - name: Verify deployment
+        run: kubectl get pods -n eks-monitor
+
+  kbom:
+    name: KBOM Scan
+    runs-on: ubuntu-latest
+    needs: deploy
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name eks-monitor-demo \
+            --region ${{ secrets.AWS_DEFAULT_REGION }}
+
+      - name: Run KBOM scan
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          trivy k8s \
+            --report all \
+            --format cyclonedx \
+            --scanners vuln \
+            --output kbom.cdx.json
+          trivy sbom --scanners vuln --format table kbom.cdx.json || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kbom-report
+          path: kbom.cdx.json

@@ -1,3 +1,4 @@
+
 # GoLang EKS Monitor
 
 > Production-grade Kubernetes cluster monitoring app with a full DevSecOps pipeline
@@ -12,7 +13,7 @@
 
 A real Go application that runs **inside an EKS cluster** and queries the Kubernetes metrics-server API to display live resource usage:
 
-- CPU and memory utilisation at cluster and node level
+- Live CPU and memory utilisation at cluster and node level
 - Pod counts by status (Running / Pending / Failed) across all namespaces
 - Namespace inventory
 - Auto-refresh every 30 seconds
@@ -23,89 +24,97 @@ This is not a placeholder — it uses `client-go` with a least-privilege `Cluste
 ---
 
 ## Pipeline Architecture
-Push to feature/* → SAST + SCA only
+Push to feature/* → SAST + SCA + Kyverno Policy Validation
 
-Push to develop   → SAST + SCA + Build + Push to GHCR (dev tag)
+Push to develop   → SAST + SCA + Kyverno + Build + Push to GHCR (dev tag)
 
-Push to main      → SAST + SCA + Build + Push + Cosign sign + Deploy to EKS + KBOM scan
-### Stages
+Push to main      → Full — SAST + SCA + Kyverno + Build + Cosign sign + Deploy to EKS + KBOM + Falco
+Push to feature/* → SAST + SCA + Kyverno Policy Validation
 
-| Stage | Tool | What it checks |
-|---|---|---|
-| SAST | Semgrep | Static analysis of Go source and Dockerfile |
-| SCA | Trivy + Nancy | Go module dependency vulnerabilities |
-| Build | Docker | Multi-stage build → distroless image |
-| Push | GHCR | Push to ghcr.io with SHA digest tag |
-| Sign | Cosign | Keyless signing via GitHub OIDC — no keys stored |
-| Deploy | Helm | Helm chart with RBAC ClusterRole for metrics-server access |
-| KBOM | Trivy k8s | Cluster-wide CycloneDX inventory + vulnerability scan |
-| Runtime | Falco | eBPF-based syscall monitoring with MITRE ATT&CK mapping |
+Push to develop   → SAST + SCA + Kyverno + Build + Push to GHCR (dev tag)
 
----
+Push to main      → Full — SAST + SCA + Kyverno + Build + Cosign sign + Deploy to EKS + KBOM + Falco
 
-## Multi-Branch Strategy
-main          Protected — requires PR from develop, pipeline must pass
+main          → Protected — requires PR from develop, all checks must pass
 
-└── develop Integration branch — SAST + SCA + Build + GHCR push
+└── develop → Integration — SAST + SCA + Kyverno + Build + GHCR push
 
-└── feature/eks-monitor-app   Go app and dashboard
+└── feature/eks-monitor-app    Go app and live dashboard
 
-└── feature/pipeline-security SAST + SCA workflows
+└── feature/pipeline-security  SAST + SCA workflows
 
-└── feature/cosign-signing    Cosign + GHCR integration
+└── feature/kyverno-policy     Kyverno admission policies
 
-└── feature/helm-deploy       Helm chart + RBAC + EKS deploy
+└── feature/cosign-signing     Cosign + GHCR integration (planned)
 
-└── feature/kbom-falco        KBOM scan + Falco runtime
-Each feature branch triggers fast-feedback security scanning only. Nothing deploys until a PR is merged to develop, and nothing goes to production until develop merges to main. This mirrors real enterprise DevSecOps workflow.
+└── feature/helm-deploy        Helm chart + RBAC + EKS deploy (planned)
 
----
+└── feature/kbom-falco         KBOM scan + Falco runtime (planned)
 
-## Security Highlights
+main          → Protected — requires PR from develop, all checks must pass
 
-**Supply chain (build time)**
-- Semgrep SAST catches misconfigurations in Go code and Dockerfile before merge
-- Trivy + Nancy SCA gates on known CVEs in Go module dependencies
-- Cosign keyless signing attaches a verifiable identity to every pushed image — no long-lived keys
-- Image digest pinned in Helm values for every deployment
+└── develop → Integration — SAST + SCA + Kyverno + Build + GHCR push
 
-**Runtime (in-cluster)**
-- Falco DaemonSet via eBPF — zero in-container agent, zero app changes required
-- MITRE ATT&CK mapped alerts (T1555, T1552.001 confirmed in demo)
-- ingress-nginx v1.6.4 intentionally deployed to demonstrate KBOM vulnerability discovery (CVE-2023-5043, CVE-2025-1974)
+└── feature/eks-monitor-app    Go app and live dashboard
 
-**Visibility**
-- KBOM generated in CycloneDX JSON format — 16 components inventoried
-- Falco UI enabled for visual alert browsing
-- All pipeline artifacts (SBOM, KBOM, scan results) retained per run
+└── feature/pipeline-security  SAST + SCA workflows
 
----
+└── feature/kyverno-policy     Kyverno admission policies
 
-## Container Image
+└── feature/cosign-signing     Cosign + GHCR integration (planned)
+
+└── feature/helm-deploy        Helm chart + RBAC + EKS deploy (planned)
+
+└── feature/kbom-falco         KBOM scan + Falco runtime (planned)
+
+This passes the policy gate
+image: ghcr.io/mayanksekhar/golang-eks-monitor-app@sha256:abc11cec...
+This fails the policy gate — pipeline stops
+image: ghcr.io/mayanksekhar/golang-eks-monitor-app:develop
+This also fails — wrong registry
+image: nginx:1.21
+
+This passes the policy gate
+image: ghcr.io/mayanksekhar/golang-eks-monitor-app@sha256:abc11cec...
+This fails the policy gate — pipeline stops
+image: ghcr.io/mayanksekhar/golang-eks-monitor-app:develop
+This also fails — wrong registry
+image: nginx:1.21
+
 Registry:   ghcr.io/mayanksekhar/golang-eks-monitor-app
+
+Tags:       :develop, :main, :dev-<sha>, :<sha>
 
 Signing:    Cosign keyless (GitHub OIDC)
 
-Verify:     cosign verify ghcr.io/mayanksekhar/golang-eks-monitor-app:main 
+Verify the image signature
+cosign verify ghcr.io/mayanksekhar/golang-eks-monitor-app:main 
 
 --certificate-identity-regexp="https://github.com/mayanksekhar/GoLang-EKS-Monitor-app" 
 
 --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
----
 
-## Infrastructure
+Verify the image signature
+cosign verify ghcr.io/mayanksekhar/golang-eks-monitor-app:main 
+
+--certificate-identity-regexp="https://github.com/mayanksekhar/GoLang-EKS-Monitor-app" 
+
+--certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+
 Cloud:       AWS EKS (us-east-1)
 
-Node:        t3.medium (1 managed node)
+Node:        t3.medium (1 managed node — sized for Falco UI)
 
 K8s version: 1.31
 
 Namespaces:  eks-monitor, ingress-nginx, falco, kube-system
+
 ---
 
-## RBAC — Why the App Needs a ClusterRole
+## RBAC — Least Privilege ClusterRole
 
-The EKS Monitor queries the metrics-server API, which requires specific Kubernetes permissions. Rather than granting broad access, the Helm chart creates a minimal ClusterRole:
+The EKS Monitor queries the metrics-server API which requires specific Kubernetes permissions.
+The Helm chart creates a minimal ClusterRole — read-only access to nodes, pods, and namespaces only:
 
 ```yaml
 rules:
@@ -117,17 +126,34 @@ rules:
     verbs: ["get", "list"]
 ```
 
-This is intentionally narrow — it can read node and pod metrics, nothing else. No secrets, no configmaps, no write access.
+No secrets. No configmaps. No write access. No cluster-admin.
+
+---
+
+## Cosign Verification
+
+Every image pushed to `main` is signed using Cosign keyless signing with GitHub OIDC.
+No private keys are stored — the identity is proved by the GitHub Actions workflow itself.
+
+```bash
+# Verify any image from this repo
+cosign verify \
+  ghcr.io/mayanksekhar/golang-eks-monitor-app@sha256:<digest> \
+  --certificate-identity-regexp="https://github.com/mayanksekhar/GoLang-EKS-Monitor-app/.github/workflows/main.yml" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+```
 
 ---
 
 ## Thinkwerke
 
-This project is part of the Thinkwerke DevSecOps portfolio — a set of real, end-to-end security engineering projects built to demonstrate staff/principal-level judgment:
+This project is part of the **Thinkwerke DevSecOps portfolio** — a set of real, end-to-end security engineering projects built to demonstrate staff/principal-level judgment:
 
-- **Detect** → Falco runtime security + KBOM scanning (this project)
-- **Prevent** → SBOM-gated supply chain pipeline with Cosign attestation
-- **Audit** → OWASP LLM Top 10 scanner suite
+| Project | Focus | Stack |
+|---|---|---|
+| **GoLang EKS Monitor** (this) | Detect + Prevent | Go, EKS, Falco, Kyverno, Cosign, KBOM |
+| **SBOM-gated pipeline** | Prevent | Go, GitLab CI, Syft, Grype, Cosign |
+| **OWASP LLM Scanner** | Audit | Python, Ollama, GitLab CI |
 
 Portfolio: `docs.thinkwerke.com`
 GitLab: `gitlab.com/mayanksekhar`
@@ -144,3 +170,10 @@ go run main.go
 # Open http://localhost:8080
 ```
 
+---
+
+## Teardown
+
+```bash
+eksctl delete cluster -f ~/eks-monitor-demo.yaml
+```

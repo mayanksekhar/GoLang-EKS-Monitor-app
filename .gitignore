@@ -1,0 +1,9 @@
+*.exe
+*.out
+dist/
+vendor/
+__pycache__/
+semgrep-results.json
+kbom.cdx.json
+image-sbom.cdx.json
+.DS_Store

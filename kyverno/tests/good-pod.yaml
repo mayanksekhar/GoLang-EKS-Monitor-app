@@ -5,7 +5,7 @@ metadata:
 spec:
   containers:
     - name: eks-monitor
-      image: ghcr.io/mayanksekhar/golang-eks-monitor-app@sha256:253fc58c4d705199de41bda2624321e7fa2744c2
+      image: ghcr.io/mayanksekhar/golang-eks-monitor-app@sha256:abc11cec7bcc5945a1b1a4e0be9d3b6bfc963cb816893dcd1c603455e4094aa7
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
